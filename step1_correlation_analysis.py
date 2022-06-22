@@ -23,14 +23,15 @@ corr_coeffs = pd.DataFrame({'State': states})
 p_values = pd.DataFrame({'State': states})
 completeness_matrix = pd.DataFrame({'State': states})
 
+namrs_outliers_removed = remove_outliers_from_column(county_summaries, target)  
 
-
-for state in states:
-    state_df = county_summaries[county_summaries['StateAbbr']==state]
-    for col in num_cols:
-        temp_df = state_df[[col, target]].dropna(axis=0)
+for col in num_cols:
+    temp_df = remove_outliers_from_column(namrs_outliers_removed, col) 
+    for state in states:
+        state_df = temp_df[temp_df['StateAbbr']==state][[col, target]].dropna(axis=0)
+        # print('Removed outliers in column', col)
         try: 
-            r, p = stats.pearsonr(temp_df[col], temp_df[target])
+            r, p = stats.spearmanr(state_df[col], state_df[target]) ## can be used with pearsonr as well.
             is_complete = True
         except ValueError:
             r, p = [0, 1]
@@ -49,9 +50,9 @@ p_values = p_values.append(pval_means, ignore_index=True)
 
 
 ### Export correlation coeffs and p-values
-corr_coeffs.to_csv('namrs_vs_external_correlation_coeffs.csv', index=False)
-p_values.to_csv('namrs_vs_external_corr_p_values.csv', index=False)
-completeness_matrix.to_csv('namrs_vs_external_completeness_matrix.csv', index=False)
+# corr_coeffs.to_csv('namrs_vs_external_correlation_coeffs.csv', index=False)
+# p_values.to_csv('namrs_vs_external_corr_p_values.csv', index=False)
+# completeness_matrix.to_csv('namrs_vs_external_completeness_matrix.csv', index=False)
 
 
 ## Significantly correlated features in 4+ states at alpha=0.01
