@@ -1,8 +1,9 @@
-def get_mean_imputation_dict_by_state(df, state_col):
+def get_mean_imputation_dict_by_state(df, state_col, num_cols):
     ''' Computes and returns a dictionary of means to impute for all columns by state
     and imputed dataframe
     df: pandas data frame
     state_col: state column name in df
+    num_cols: numeric columns to be imputed
     returns: df_imputed, na_impute_dict'''
     states = df[state_col].unique().tolist()
     missing_values_per_state = pd.DataFrame({'State': states})
@@ -15,7 +16,7 @@ def get_mean_imputation_dict_by_state(df, state_col):
     alpha_normal = 0.05
     
     na_impute_dict = dict()
-    for col in num_cols:
+    for i, col in enumerate(num_cols):
         col_dict = dict()
         for state in states:
             state_df = df[df[state_col]==state][[col, target]]
@@ -32,11 +33,11 @@ def get_mean_imputation_dict_by_state(df, state_col):
             state_stds_per_feature.loc[state_stds_per_feature['State']==state, col] = round(std, 3)
             normality_stat.loc[normality_stat['State']==state, col] = round(stat, 3)
             normality_pval.loc[normality_pval['State']==state, col] = round(p, 3)
-            isnormal.loc[isnormal['State']==state, col] = normal
-            col_dict[col] =    
+            isnormal.loc[isnormal['State']==state, col] = normal  
             
             ## Imputation
             na_indicator = col + '_ismissing'
+            df_imputed = df.copy()
             df_imputed[df_imputed[state_col]==state][na_indicator] = df_imputed[df_imputed['StateAbbr']==state][col].isna()
             if normal == True:
                 impute_value = mean
@@ -56,10 +57,11 @@ def get_mean_imputation_dict_by_state(df, state_col):
                         impute_value = overall_median
                         df_imputed[df_imputed[state_col]==state][col].fillna(impute_value, inplace=True)
             
-            col_dict[col] = col_dict.append({state: impute_value})            
+            col_dict[state] =  impute_value            
                         
                 
         na_impute_dict[col] = col_dict 
     
     return(df_imputed, na_impute_dict)
-        
+
+df_imputed, na_impute_dict = get_mean_imputation_dict_by_state(df, state_col, num_cols)
