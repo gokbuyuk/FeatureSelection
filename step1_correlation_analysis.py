@@ -1,3 +1,5 @@
+from scipy import stats
+
 ### Remove columns with too many NAs
 na_ths = 0.5
 cols_to_remove = [col for col in data.columns if data[col].isnull().mean()>na_ths]
