@@ -24,34 +24,19 @@
 #  * Improved speed via xgboost parameters n_estimates and tree_depth
 # 0.2.0 2022-07-11 EB
 #  * added option n_features_to_select to restrict number of returned features
-
+# 0.3.0 2023-12-02 GB 
+#  * Changed the testing to unittest framework 
 import pandas as pd
 import numpy as np
-import dalex as dx
+# import dalex as dx
 import xgboost as xgb
-
 from scipy.stats import pearsonr
 from sklearn.feature_selection import SequentialFeatureSelector
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.datasets import load_iris
 from sklearn.feature_selection import RFE
 from sklearn.svm import SVR
-
-# https://dalex.drwhy.ai/python/api/#dalex.Explainer.model_parts
-
-# features = []
-# exp = dx.Explainer(model, X_train[features], y_train)
-# vi = exp.model_parts(loss_function='1-auc')
-# order_features_model1 = vi.result.sort_values(by='dropout_loss', ascending=False)
-
-# feature_imp = order_features_model1[order_features_model1['variable'].isin(features)]
-# for feature in features:
-#     temp_df = Xy_train[[feature, target]].dropna()
-#     r, p = stats.pearsonr(temp_df[feature], temp_df[target])
-#     feature_imp.loc[feature_imp['variable']==feature, 'Direction'] = np.where( r< 0,  
-#     'Negative', 'Positive')
-    
-# sns.barplot(data=feature_imp, y='variable', x='dropout_loss', hue='Direction', dodge=False)
+import unittest 
 
 def prefixed_index(prefix,n,startindex=1):
     '''
@@ -167,33 +152,35 @@ def filter_correlations(
             'reasons':reasons,
             'target_correlations': target_correlations}
 
-def test_filter_correlations():
-    target_corr_max_p=0.2
-    target_corr_max=0.9
-    data = pd.DataFrame(data={
-        'A':[1,2,3,4,5,6],
-        'B':[1,2,3,4,6,6],
-        'C':[6,11,4,10,2,1],
-        'D':[1,1,1,1,1,1], # constant, should be filtered out
-        'E':[-1,1,-1,1,-1,1],  # uncorrelated should be filtered out
-        'F':[6,11,4,10,2,1.5], # too similar to 'C'
-        'T':[1,2,4,6,8,12]})
-    result = filter_correlations(data,target='T',
-        target_corr_max_p=target_corr_max_p,
-        target_corr_max=target_corr_max)
-    corrs = result['target_correlations']
-    dat2 = result['data']
-    cn2 = dat2.columns
-    for name in cn2:
-        if name == 'T':
-            continue
-        r, p = corrs[name]
-        assert not np.isnan(r).any()
-        assert not np.isnan(p).any()
-        assert p <= target_corr_max_p
-        assert r <= target_corr_max
-    print(result['reasons'])
-    print(documentation_from_named_lists(result['reasons']))
+class TestFilterCorrelations(unittest.TestCase):
+
+    def test_filter_correlations(self):
+        target_corr_max_p=0.2
+        target_corr_max=0.9
+        data = pd.DataFrame(data={
+            'A':[1,2,3,4,5,6],
+            'B':[1,2,3,4,6,6],
+            'C':[6,11,4,10,2,1],
+            'D':[1,1,1,1,1,1], # constant, should be filtered out
+            'E':[-1,1,-1,1,-1,1],  # uncorrelated should be filtered out
+            'F':[6,11,4,10,2,1.5], # too similar to 'C'
+            'T':[1,2,4,6,8,12]})
+        result = filter_correlations(data,target='T',
+            target_corr_max_p=target_corr_max_p,
+            target_corr_max=target_corr_max)
+        corrs = result['target_correlations']
+        dat2 = result['data']
+        cn2 = dat2.columns
+        for name in cn2:
+            if name == 'T':
+                continue
+            r, p = corrs[name]
+            assert not np.isnan(r).any()
+            assert not np.isnan(p).any()
+            assert p <= target_corr_max_p
+            assert r <= target_corr_max
+        print(result['reasons'])
+        print(documentation_from_named_lists(result['reasons']))
 
 def documentation_from_named_lists(
     x, 
@@ -301,119 +288,117 @@ def filter_features(X, y,
     print("Number of features remaining after feature selection step:", len(newcols))
     return {'data':X2,'column_flags':fs.get_support(),'new_columns':newcols}
 
+class TestFilterFeatures(unittest.TestCase):
 
-def test_filter_features_pandas():
-    '''
-    Test filter_features using simple
-    example from Iris dataset.
-    '''
-    X, y = load_iris(return_X_y=True)
-    X = pd.DataFrame(X)
-    y = list(y)
-    result = filter_features(X,y)
-    X2 = result['data']
-    # print(X.head())
-    # print(X2)
-    # print(result)
-    assert X2.shape[1] == 2
+    def test_filter_features_pandas(self):
+        '''
+        Test filter_features using simple
+        example from Iris dataset.
+        '''
+        X, y = load_iris(return_X_y=True)
+        X = pd.DataFrame(X)
+        y = list(y)
+        result = filter_features(X,y)
+        X2 = result['data']
+        # print(X.head())
+        # print(X2)
+        # print(result)
+        assert X2.shape[1] == 2
 
-def test_filter_features_pandas_large(
-        method_estimate='xgb',
-        method_select='recursive',
-        extracols=70, extrarows=100, n_jobs=2):
-    '''
-    Example that tests run times for large number of
-    rows (samples) and columns (features).
-    One can have more challenging tests for
-    extracols > 200, extrarows > 1000.
-    '''
-    X, y = load_iris(return_X_y=True)
-    X = pd.DataFrame(X,columns=['I1','I2','I3','I4'])
-    X = X[:100]
-    y = y[:100] 
-    y = list(y)
-    rows, cols = X.shape
-    if extracols > 0:
-        A = np.random.normal(0, 1, (rows, extracols))
-        A = pd.DataFrame(data=A, columns=prefixed_index('V',n=extracols))
-        assert not pd.Series(A.columns).duplicated().any()
-        X = pd.concat([X,A],axis=1) # add more columns
-    if extrarows > 0:
-        A2 = np.random.normal(0, 1, (extrarows, len(X.columns)))
-        A2 = pd.DataFrame(data=A2, columns=X.columns)
-        X = pd.concat([X,A2],axis=0) # add more rows
-        y.extend(list(np.random.randint(low=0,high=2,size=extrarows)))
-    X.index = range(len(X))
-    assert len(y) == X.shape[0] # number of rows must match
-    assert not pd.Series(X.columns).duplicated().any()
-    
-    result = filter_features(X,y,n_jobs=n_jobs,
-                method_estimate=method_estimate,
-                method_select=method_select)
-    X2 = result['data']
-    newcols = result['new_columns']
-    # print(X.head())
-    # print(X2)
-    # print(result)
-    assert not pd.Series(newcols).duplicated().any()
-    assert len(newcols) < X.shape[1] # must have reduced number of features
-
-
-def test_AutoFeaturesEnsemble_large(
-        method_estimate='xgb',
-        method_select='recursive',
-        extracols=100, extrarows=500, n_jobs=2):
-    '''
-    Example that tests run times for large number of
-    rows (samples) and columns (features).
-    One can have more challenging tests for
-    extracols > 200, extrarows > 1000.
-    '''
-    X, y = load_iris(return_X_y=True)
-    X = pd.DataFrame(X,columns=['I1','I2','I3','I4'])
-    X = X[:100]
-    y = y[:100] 
-    y = list(y)
-    rows, cols = X.shape
-    if extracols > 0:
-        A = np.random.normal(0, 1, (rows, extracols))
-        A = pd.DataFrame(data=A, columns=prefixed_index('V',n=extracols))
-        assert not pd.Series(A.columns).duplicated().any()
-        X = pd.concat([X,A],axis=1) # add more columns
-    if extrarows > 0:
-        A2 = np.random.normal(0, 1, (extrarows, len(X.columns)))
-        A2 = pd.DataFrame(data=A2, columns=X.columns)
-        X = pd.concat([X,A2],axis=0) # add more rows
-        y.extend(list(np.random.randint(low=0,high=2,size=extrarows)))
-    X.index = range(len(X))
-    assert len(y) == X.shape[0] # number of rows must match
-    assert not pd.Series(X.columns).duplicated().any()
-    factors = np.random.randint(low=1,high=4, size=len(y))
-    X['Target'] = y
-    assert 'Target' in X.columns 
-    result = AutoFeaturesEnsemble(X,target='Target',factors=factors,
-                n_jobs=n_jobs,
-                method_estimate=method_estimate,
-                method_select=method_select)
-    X2 = result['data']
-    newcols = result['new_columns']
-    # print(X.head())
-    # print(X2)
-    # print(result)
-    # print(newcols)
-    assert not pd.Series(newcols).duplicated().any()
-    # assert X2.shape[1] == 2
+    def test_filter_features_pandas_large(sel, 
+            method_estimate='xgb',
+            method_select='recursive',
+            extracols=70, extrarows=100, n_jobs=2):
+        '''
+        Example that tests run times for large number of
+        rows (samples) and columns (features).
+        One can have more challenging tests for
+        extracols > 200, extrarows > 1000.
+        '''
+        X, y = load_iris(return_X_y=True)
+        X = pd.DataFrame(X,columns=['I1','I2','I3','I4'])
+        X = X[:100]
+        y = y[:100] 
+        y = list(y)
+        rows, cols = X.shape
+        if extracols > 0:
+            A = np.random.normal(0, 1, (rows, extracols))
+            A = pd.DataFrame(data=A, columns=prefixed_index('V',n=extracols))
+            assert not pd.Series(A.columns).duplicated().any()
+            X = pd.concat([X,A],axis=1) # add more columns
+        if extrarows > 0:
+            A2 = np.random.normal(0, 1, (extrarows, len(X.columns)))
+            A2 = pd.DataFrame(data=A2, columns=X.columns)
+            X = pd.concat([X,A2],axis=0) # add more rows
+            y.extend(list(np.random.randint(low=0,high=2,size=extrarows)))
+        X.index = range(len(X))
+        assert len(y) == X.shape[0] # number of rows must match
+        assert not pd.Series(X.columns).duplicated().any()
+        
+        result = filter_features(X,y,n_jobs=n_jobs,
+                    method_estimate=method_estimate,
+                    method_select=method_select)
+        X2 = result['data']
+        newcols = result['new_columns']
+        # print(X.head())
+        # print(X2)
+        # print(result)
+        assert not pd.Series(newcols).duplicated().any()
+        assert len(newcols) < X.shape[1] # must have reduced number of features
 
 
-def test_filter_features():
-    '''
-    Testing filter_features using Iris dataset.
-    '''
-    X, y = load_iris(return_X_y=True)
-    X2 = filter_features(X,y)['data']
-    # print(X[:5,:])
-    # print(X2)
-    assert X2.shape[1] == 2
+    def test_AutoFeaturesEnsemble_large(self, 
+            method_estimate='xgb',
+            method_select='recursive',
+            extracols=100, extrarows=500, n_jobs=2):
+        '''
+        Example that tests run times for large number of
+        rows (samples) and columns (features).
+        One can have more challenging tests for
+        extracols > 200, extrarows > 1000.
+        '''
+        X, y = load_iris(return_X_y=True)
+        X = pd.DataFrame(X,columns=['I1','I2','I3','I4'])
+        X = X[:100]
+        y = y[:100] 
+        y = list(y)
+        rows, cols = X.shape
+        if extracols > 0:
+            A = np.random.normal(0, 1, (rows, extracols))
+            A = pd.DataFrame(data=A, columns=prefixed_index('V',n=extracols))
+            assert not pd.Series(A.columns).duplicated().any()
+            X = pd.concat([X,A],axis=1) # add more columns
+        if extrarows > 0:
+            A2 = np.random.normal(0, 1, (extrarows, len(X.columns)))
+            A2 = pd.DataFrame(data=A2, columns=X.columns)
+            X = pd.concat([X,A2],axis=0) # add more rows
+            y.extend(list(np.random.randint(low=0,high=2,size=extrarows)))
+        X.index = range(len(X))
+        assert len(y) == X.shape[0] # number of rows must match
+        assert not pd.Series(X.columns).duplicated().any()
+        factors = np.random.randint(low=1,high=4, size=len(y))
+        X['Target'] = y
+        assert 'Target' in X.columns 
+        result = AutoFeaturesEnsemble(X,target='Target',factors=factors,
+                    n_jobs=n_jobs,
+                    method_estimate=method_estimate,
+                    method_select=method_select)
+        X2 = result['data']
+        newcols = result['new_columns']
+
+        assert not pd.Series(newcols).duplicated().any()
+        # assert X2.shape[1] == 2
+
+
+    def test_filter_features(self):
+        '''
+        Testing filter_features using Iris dataset.
+        '''
+        X, y = load_iris(return_X_y=True)
+        X2 = filter_features(X,y)['data']
+        # print(X[:5,:])
+        # print(X2)
+        assert X2.shape[1] == 2
 
 
 def AutoFeatures(data,target,
@@ -567,91 +552,93 @@ def AutoFeaturesEnsemble(
             'counts':columns_counts,
             'sizes':columns_sizes,}
 
-def test_AutoFeatures():
-    '''
-    Tests AutoFeatures method using a simple
-    synthetic dataset. Checks if the method
-    detects and removes columns with too high
-    or too low correlation.
-    '''
-    target_corr_max_p=0.2
-    target_corr_max=0.9
-    data = pd.DataFrame(data={
-        'A':[1,2,3,4,5,6],
-        'B':[1,2,3,4,6,6],
-        'C':[6,11,4,10,2,1],
-        'D':[1,1,1,1,1,1], # constant, should be filtered out
-        'E':[-1,1,-1,1,-1,1],  # uncorrelated should be filtered out
-        'F':[6,11,4,10,2,1.5], # too similar to 'C'
-        'G':[1.2,0.3, 4.7, 2.3, 0.5, 0.9],
-        'H':[2.5,8.4, 5.3, -2.4,-1.5,0.0],
-        'T':[0,1,0,1,0,1]})
-    result = AutoFeatures(data, target='T',cv=3)
-    # print(result)
-    # print(result['new_columns'])
-    assert result['data'].shape[1] == 1
-    assert result['new_columns'] == ['G']
+class TestAutoFeatures(unittest.TestCase):
+
+    def test_AutoFeatures(self):
+        '''
+        Tests AutoFeatures method using a simple
+        synthetic dataset. Checks if the method
+        detects and removes columns with too high
+        or too low correlation.
+        '''
+        target_corr_max_p=0.2
+        target_corr_max=0.9
+        data = pd.DataFrame(data={
+            'A':[1,2,3,4,5,6],
+            'B':[1,2,3,4,6,6],
+            'C':[6,11,4,10,2,1],
+            'D':[1,1,1,1,1,1], # constant, should be filtered out
+            'E':[-1,1,-1,1,-1,1],  # uncorrelated should be filtered out
+            'F':[6,11,4,10,2,1.5], # too similar to 'C'
+            'G':[1.2,0.3, 4.7, 2.3, 0.5, 0.9],
+            'H':[2.5,8.4, 5.3, -2.4,-1.5,0.0],
+            'T':[0,1,0,1,0,1]})
+        result = AutoFeatures(data, target='T',cv=3)
+        # print(result)
+        # print(result['new_columns'])
+        assert result['data'].shape[1] == 1
+        assert result['new_columns'] == ['G']
 
 
-def test_AutoFeatures_iris():
-    '''
-    Tests using AutoFeatures function a truncated
-    Iris dataset.
-    '''
-    X, y = load_iris(return_X_y=True)
-    X = X[:99,:]
-    y = y[:99]
-    X = pd.DataFrame(X)
-    y = list(y)
-    X.insert(0, 'Target', y)
-    assert 'Target' in X.columns
-    result = AutoFeatures(X,target='Target')
-    X2 = result['data']
-    # print(X.head())
-    # print(result)
-    assert X2.shape[1] == 1
+    def test_AutoFeatures_iris(self):
+        '''
+        Tests using AutoFeatures function a truncated
+        Iris dataset.
+        '''
+        X, y = load_iris(return_X_y=True)
+        X = X[:99,:]
+        y = y[:99]
+        X = pd.DataFrame(X)
+        y = list(y)
+        X.insert(0, 'Target', y)
+        assert 'Target' in X.columns
+        result = AutoFeatures(X,target='Target')
+        X2 = result['data']
+        # print(X.head())
+        # print(result)
+        assert X2.shape[1] == 1
 
-def test_AutoFeatures_iris_nfeatures():
-    '''
-    Tests using AutoFeatures function a truncated
-    Iris dataset.
-    '''
-    X, y = load_iris(return_X_y=True)
-    X = X[:99,:]
-    y = y[:99]
-    X = pd.DataFrame(X)
-    y = list(y)
-    X.insert(0, 'Target', y)
-    assert 'Target' in X.columns
-    result = AutoFeatures(X,target='Target',
-        n_features_to_select=2)
-    X2 = result['data']
-    assert X2.shape[1] == 2
+    def test_AutoFeatures_iris_nfeatures(self):
+        '''
+        Tests using AutoFeatures function a truncated
+        Iris dataset.
+        '''
+        X, y = load_iris(return_X_y=True)
+        X = X[:99,:]
+        y = y[:99]
+        X = pd.DataFrame(X)
+        y = list(y)
+        X.insert(0, 'Target', y)
+        assert 'Target' in X.columns
+        result = AutoFeatures(X,target='Target',
+            n_features_to_select=2)
+        X2 = result['data']
+        assert X2.shape[1] == 2
 
-def test_AutoFeaturesEnsemble():
-    '''
-    Tests AutoFeatures method using a simple
-    synthetic dataset. Checks if the method
-    detects and removes columns with too high
-    or too low correlation.
-    '''
-    target_corr_max_p=0.2
-    target_corr_max=0.9
-    data = pd.DataFrame(data={
-        'A':[1,2,3,4,5,6,7,8],
-        'B':[1,2,3,4,6,6,6,1],
-        'C':[6,11,4,10,2,1,1,6],
-        'D':[1,1,1,1,1,1,1,1], # constant, should be filtered out
-        'E':[-1,1,-1,1,-1,1,1,-1],  # uncorrelated should be filtered out
-        'F':[6,11,4,10,2,1.5,1.5,6], # too similar to 'C'
-        'G':[1.2,0.3, 4.7, 2.3, 0.5, 0.9,0.9,1.2],
-        'H':[2.5,8.4, 5.3, -2.4,-1.5,0.0,0.0,2.5],
-        'T':[0,1,0,1,0,1,1,0]})
-    factors = ['X','X','X','X','Y','Y','Y','Y']
-    result = AutoFeaturesEnsemble(data, 
-        target='T', factors = factors, cv=3)
-    # print(result)
-    assert result['data'].shape[1] == 2
+    def test_AutoFeaturesEnsemble(self):
+        '''
+        Tests AutoFeatures method using a simple
+        synthetic dataset. Checks if the method
+        detects and removes columns with too high
+        or too low correlation.
+        '''
+        target_corr_max_p=0.2
+        target_corr_max=0.9
+        data = pd.DataFrame(data={
+            'A':[1,2,3,4,5,6,7,8],
+            'B':[1,2,3,4,6,6,6,1],
+            'C':[6,11,4,10,2,1,1,6],
+            'D':[1,1,1,1,1,1,1,1], # constant, should be filtered out
+            'E':[-1,1,-1,1,-1,1,1,-1],  # uncorrelated should be filtered out
+            'F':[6,11,4,10,2,1.5,1.5,6], # too similar to 'C'
+            'G':[1.2,0.3, 4.7, 2.3, 0.5, 0.9,0.9,1.2],
+            'H':[2.5,8.4, 5.3, -2.4,-1.5,0.0,0.0,2.5],
+            'T':[0,1,0,1,0,1,1,0]})
+        factors = ['X','X','X','X','Y','Y','Y','Y']
+        result = AutoFeaturesEnsemble(data, 
+            target='T', factors = factors, cv=3)
+        # print(result)
+        assert result['data'].shape[1] == 2
 
 
 ##### Automate saving the models trained and their accuracy 
@@ -760,21 +747,5 @@ def risk_score(data, target, model, risk_categories, risk_names):
           prob_1 = model.predict_proba(df[features])[:, 1]
           df['Risk_score_{}'.format(i)] = prob_1
 
-
-def test_all():
-    test_AutoFeatures_iris_nfeatures()
-    test_filter_features_pandas_large(
-        extracols=500, extrarows=100,
-        method_estimate='xgb', method_select='recursive',
-        n_jobs=4)
-    test_AutoFeaturesEnsemble()
-    test_AutoFeaturesEnsemble_large()
-    test_AutoFeatures()
-    test_AutoFeatures_iris()
-    test_filter_correlations()
-    test_filter_features()
-    test_filter_features_pandas()
-
-
-# if __name__ == "__main__":  # only run if this script is exectuted directly
-#     test_all()
+if __name__ == '__main__':
+    unittest.main()
