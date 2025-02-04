@@ -1,6 +1,4 @@
 # Automated Feature Selection
-#
-# This script was previously called ACL_useful_functions_Gokcen.py
 
 # Usage:
 # df = AutoClean(df)  # from AutoClean package
@@ -8,24 +6,8 @@
 # For more information look at example code in functions
 # test_AutoClean
 # test_AutoClean_iris
-#
-# Version history
-# 0.1.0 2022-07-08 EB
-#  * initial version that filters by correlation and xgboost feature elimination
-# 0.1.2 2022-07-08 EB
-#  * Faster version using recursive feature elimination
-#  * added other estimators, now 3 available: Knn, SVM, XGBoost
-# 0.1.3 2022-07-08 EB
-#  * minor change of added eval_metric in xgb which made warning disappear
-#  * added docstrings
-# 0.1.4 2022-07-09 EB
-#  * implemented function AutoFeaturesEnsemble
-#  * Changed "assert" to "raise" statements
-#  * Improved speed via xgboost parameters n_estimates and tree_depth
-# 0.2.0 2022-07-11 EB
-#  * added option n_features_to_select to restrict number of returned features
-# 0.3.0 2023-12-02 GB 
-#  * Changed the testing to unittest framework 
+
+
 import pandas as pd
 import numpy as np
 # import dalex as dx
