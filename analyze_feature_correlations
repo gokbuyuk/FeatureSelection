@@ -1,0 +1,205 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy import stats
+import statsmodels.stats.multitest
+import itertools
+from itertools import islice
+
+def analyze_feature_correlations(data, target, group_col=None, num_cols=None,
+                                na_threshold=0.5, alpha=0.05, min_significant_groups=5,
+                                correlation_method='spearman', plot_results=True):
+    """
+    Performs comprehensive feature analysis including:
+    - Removing columns with too many NAs
+    - Removing outliers
+    - Computing correlations with target variable
+    - Applying FDR correction
+    - Identifying significant features
+    - Visualizing results
+
+    Parameters:
+    -----------
+    data : pandas DataFrame
+        The dataset to analyze
+    target : str
+        Name of the target column
+    group_col : str, optional
+        Column name to group by 
+    num_cols : list, optional
+        List of numeric columns to analyze (if None, all numeric columns except target)
+    na_threshold : float, default=0.5
+        Threshold for removing columns with too many NAs
+    alpha : float, default=0.05
+        Significance level for correlation tests
+    min_significant_groups : int, default=5
+        Minimum number of groups where a feature must be significant
+    correlation_method : str, default='spearman'
+        Method for correlation ('pearson' or 'spearman')
+    plot_results : bool, default=True
+        Whether to generate and display correlation plots
+
+    Returns:
+    --------
+    dict: Results containing:
+        - cleaned_data: DataFrame after NA and outlier removal
+        - correlation_coefficients: DataFrame of correlation coefficients
+        - p_values: DataFrame of p-values
+        - significant_features: List of significant features
+        - significant_features_fdr: List of significant features after FDR correction
+    """
+    # Make a copy of the data to avoid modifying the original
+    data_clean = data.copy()
+
+    # Remove columns with too many NAs
+    cols_to_remove = [col for col in data_clean.columns if data_clean[col].isnull().mean() > na_threshold]
+    data_clean.drop(cols_to_remove, axis=1, inplace=True)
+
+    # If num_cols not specified, use all numeric columns except target
+    if num_cols is None:
+        num_cols = data_clean.select_dtypes(include=np.number).columns.tolist()
+        if target in num_cols:
+            num_cols.remove(target)
+
+    # Define outlier removal function
+    def remove_outliers_from_column(df, col):
+        """Removes outliers in given column using IQR method"""
+        Q1 = df[col].quantile(0.25)
+        Q3 = df[col].quantile(0.75)
+        IQR = Q3 - Q1
+        return df[(df[col] > (Q1 - 1.5 * IQR)) & (df[col] < (Q3 + 1.5 * IQR))]
+
+    # Remove outliers from target variable
+    data_clean = remove_outliers_from_column(data_clean, target)
+
+    # Define groups for analysis
+    if group_col is None:
+        # If no group column, use a dummy group
+        groups = ['All']
+        data_clean['_dummy_group'] = 'All'
+        group_col = '_dummy_group'
+    else:
+        groups = data_clean[group_col].unique().tolist()
+
+    # Initialize result dataframes
+    corr_coeffs = pd.DataFrame({group_col: groups})
+    p_values = pd.DataFrame({group_col: groups})
+    completeness_matrix = pd.DataFrame({group_col: groups})
+
+    # Calculate correlations for each feature and group
+    for col in num_cols:
+        # Remove outliers from the current column
+        temp_df = remove_outliers_from_column(data_clean, col)
+
+        for group in groups:
+            # Filter data for the current group
+            group_df = temp_df[temp_df[group_col] == group][[col, target]].dropna(axis=0)
+
+            # Calculate correlation
+            try:
+                if correlation_method.lower() == 'pearson':
+                    r, p = stats.pearsonr(group_df[col], group_df[target])
+                else:  # default to spearman
+                    r, p = stats.spearmanr(group_df[col], group_df[target])
+                is_complete = True
+            except (ValueError, TypeError):
+                r, p = 0, 1
+                is_complete = False
+
+            # Store results
+            corr_coeffs.loc[corr_coeffs[group_col] == group, col] = round(r, 2)
+            p_values.loc[p_values[group_col] == group, col] = p
+            completeness_matrix.loc[completeness_matrix[group_col] == group, col] = is_complete
+
+    # Add median row
+    corr_means = corr_coeffs[num_cols].median().to_dict()
+    corr_means[group_col] = 'Median'
+    corr_coeffs = pd.concat([corr_coeffs, pd.DataFrame([corr_means])], ignore_index=True)
+
+    pval_means = p_values[num_cols].median().to_dict()
+    pval_means[group_col] = 'Median'
+    p_values = pd.concat([p_values, pd.DataFrame([pval_means])], ignore_index=True)
+
+    # Find significantly correlated features
+    signf_counts = np.sign(
+        corr_coeffs[num_cols][
+            (p_values[num_cols] < alpha) &
+            (completeness_matrix[num_cols] == True)
+        ].fillna(0)
+    ).sum().abs().reset_index().rename(columns={'index': 'Feature', 0: 'n_significant'})
+
+    signf_features = signf_counts[
+        signf_counts['n_significant'] >= min_significant_groups
+    ].sort_values(by='n_significant', ascending=False)['Feature'].tolist()
+
+    # Apply FDR correction
+    # Flatten p-values for FDR correction
+    chain = itertools.chain(*p_values[num_cols].values)
+    fdr_obj = statsmodels.stats.multitest.multipletests(
+        pvals=list(chain), alpha=alpha, method='fdr_bh'
+    )
+    rejection_matrix = fdr_obj[0]
+
+    # Reshape rejection matrix
+    n_groups = len(groups) + 1  # +1 for the median row
+    n_col = len(num_cols)
+    reject_df = pd.DataFrame(columns=num_cols)
+    input_iter = iter(rejection_matrix)
+    output = [list(islice(input_iter, n_col)) for i in range(n_groups)]
+
+    for i in range(n_groups):
+        reject_df.loc[i, :] = output[i]
+
+    # Find features that are still significant after FDR correction
+    signf_counts_fdr = np.sign(
+        corr_coeffs[num_cols][reject_df[num_cols] == True].fillna(0)
+    ).sum().abs().reset_index().rename(columns={'index': 'Feature', 0: 'n_significant'})
+
+    signf_features_fdr = signf_counts_fdr[
+        signf_counts_fdr['n_significant'] >= min_significant_groups
+    ].sort_values(by='n_significant', ascending=False)['Feature'].tolist()
+
+    # Plot results if requested
+    if plot_results and signf_features:
+        # Sort features by median correlation
+        median_idx = corr_coeffs[group_col] == 'Median'
+        sorted_features = corr_coeffs.loc[median_idx, signf_features].T.sort_values(by=median_idx.idxmax()).index.tolist()
+
+        # Prepare data for plotting
+        plot_df = corr_coeffs[sorted_features].copy()
+
+        # Clean feature names for display
+        new_col_dict = {
+            col: col.replace('_', ' ').replace('.', ' ').replace('Pct', '%').replace('plus', '+').capitalize()
+            for col in plot_df.columns
+        }
+        plot_df.rename(columns=new_col_dict, inplace=True)
+
+        # Create color dictionary for FDR-corrected features
+        color_dict = {
+            new_col_dict[col]: 'red' if col in signf_features_fdr else 'cornflowerblue'
+            for col in signf_features
+        }
+
+        # Create plot
+        plt.figure(figsize=(5, max(5, len(signf_features) * 0.4)))
+        sns.boxplot(data=plot_df, orient='h', palette=color_dict)
+        plt.xlabel(f"{correlation_method.capitalize()} Correlation Coefficient")
+        plt.title(f"Distribution of {correlation_method.capitalize()} Correlation Coefficients Across Groups")
+        plt.axvline(0, 0, 1, color='grey')
+        plt.tight_layout()
+        plt.show()
+
+    # Prepare results
+    results = {
+        'cleaned_data': data_clean,
+        'correlation_coefficients': corr_coeffs,
+        'p_values': p_values,
+        'completeness_matrix': completeness_matrix,
+        'significant_features': signf_features,
+        'significant_features_fdr': signf_features_fdr,
+        'reject_matrix': reject_df
+    }
+
+    return results
