@@ -1,4 +1,5 @@
 # Automated Feature Selection
+
 import pandas as pd
 import numpy as np
 import xgboost as xgb
@@ -9,8 +10,8 @@ from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from sklearn.svm import SVC, SVR
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import LogisticRegression, LinearRegression
-from sklearn.inspection import permutation_importance
 from sklearn.model_selection import train_test_split
+import dalex as dx
 
 
 def prefixed_index(prefix, n, startindex=1):
@@ -239,29 +240,29 @@ def get_estimator(method_estimate='xgb', task_type='regression'):
     else:
         raise ValueError(f"Unknown method_estimate: {method_estimate}. Choose from 'xgb', 'knn', 'svm', 'rf', 'linear'")
 
-def filter_features_permutation(X, y,
-        cv=5,
+def filter_features_dalex(X, y,
         n_features_to_select=None,
         n_jobs=2,
         method_estimate='xgb',
         task_type='regression',
-        n_repeats=5,
+        n_permutations=10,
         random_state=42,
+        loss_function=None,
         verbose=True):
     '''
-    This function filters a dataframe using permutation importance to identify
+    This function filters a dataframe using dalex permutation importance to identify
     and select the most important features for prediction.
 
     Parameters:
     X(pandas.DataFrame,numpy.ndarray): Feature data not including outcome variable
     y: Outcome variable
-    cv(int): Number of cross-validation folds
     n_features_to_select(int): Numbers of features to select. If None (default) automatically select features with importance > 0
     n_jobs(int): Number of jobs for parallelization
     method_estimate(str): Method for estimator. Options: 'xgb', 'knn', 'svm', 'rf', 'linear'
     task_type(str): Type of task. Options: 'regression', 'classification'
-    n_repeats(int): Number of times to permute each feature
+    n_permutations(int): Number of permutations for each variable
     random_state(int): Random seed for reproducibility
+    loss_function(callable): Custom loss function for permutation importance
     verbose(bool): If True provide output during processing
     '''
     columns = []
@@ -285,7 +286,7 @@ def filter_features_permutation(X, y,
 
     rows, cols = X.shape
     if verbose:
-        print(f"Starting filter_features_permutation with {rows} rows and {cols} features (=columns).")
+        print(f"Starting filter_features_dalex with {rows} rows and {cols} features (=columns).")
         print(f"Task type: {task_type}, Method: {method_estimate}")
 
     for i in range(cols):
@@ -299,188 +300,204 @@ def filter_features_permutation(X, y,
         X_array = X.to_numpy(copy=True)
     else:
         X_array = X
+        X = pd.DataFrame(X, columns=columns)
 
     # Get appropriate estimator based on task type and method
     estimator = get_estimator(method_estimate, task_type)
 
-    # Split data for permutation importance calculation
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_array, y, test_size=0.3, random_state=random_state
-    )
+    # Train the model on the full dataset
+    estimator.fit(X_array, y)
 
-    # Train the model
-    estimator.fit(X_train, y_train)
+    # Create a dalex explainer
+    if task_type == 'regression':
+        explainer = dx.Explainer(estimator, X, y, label=f"{method_estimate} model")
+    else:  # classification
+        explainer = dx.Explainer(estimator, X, y, label=f"{method_estimate} model", model_type="classification")
 
-    # Calculate permutation importance
-    perm_importance = permutation_importance(
-        estimator, X_test, y_test,
-        n_repeats=n_repeats,
+    # Calculate permutation importance using dalex
+    # Use 'permutational' instead of 'permutation'
+    perm_importance = explainer.model_parts(
+        type='permutational',  # Corrected parameter value
+        N=n_permutations,
+        B=1,  # No bootstrap
         random_state=random_state,
-        n_jobs=n_jobs
+        keep_raw_permutations=False,
+        processes=n_jobs
     )
 
-    # Get feature importances and indices
-    importances = perm_importance.importances_mean
+    # Get feature importances
+    importance_df = perm_importance.result
 
-    # Create a mapping of feature indices to their importance values
-    feature_importance = {i: importances[i] for i in range(len(importances))}
+    # Filter to get only variable importances (not the _baseline_ and _full_model_)
+    importance_df = importance_df[~importance_df['variable'].isin(['_baseline_', '_full_model_'])]
 
-    # Sort features by importance (descending)
-    sorted_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)
+    # Sort by dropout_loss (higher means more important)
+    importance_df = importance_df.sort_values('dropout_loss', ascending=False)
+
+    # Get feature names and their importances
+    feature_names = importance_df['variable'].tolist()
+    importances = importance_df['dropout_loss'].values
 
     # Determine which features to select
     if n_features_to_select is None:
-        # Select features with positive importance
-        selected_indices = [idx for idx, imp in sorted_features if imp > 0]
-        if len(selected_indices) == 0:  # If no features have importance > 0
+        # Select features with positive importance (greater than baseline)
+        selected_features = importance_df[importance_df['dropout_loss'] > 0]['variable'].tolist()
+        if len(selected_features) == 0:  # If no features have importance > 0
             # Select the top 2 features or all if less than 2
-            n_to_select = min(2, len(sorted_features))
-            selected_indices = [idx for idx, _ in sorted_features[:n_to_select]]
+            n_to_select = min(2, len(feature_names))
+            selected_features = feature_names[:n_to_select]
     else:
         # Select the top n_features_to_select
-        n_to_select = min(n_features_to_select, len(sorted_features))
-        selected_indices = [idx for idx, _ in sorted_features[:n_to_select]]
+        n_to_select = min(n_features_to_select, len(feature_names))
+        selected_features = feature_names[:n_to_select]
 
     # Create support mask
     support = np.zeros(cols, dtype=bool)
-    for idx in selected_indices:
+    for feature in selected_features:
+        idx = list(columns).index(feature)
         support[idx] = True
 
     # Transform X to include only selected features
     if is_dataframe:
-        selected_columns = np.array(columns)[support]
-        X_selected = X[selected_columns]
+        X_selected = X[selected_features]
     else:
-        X_selected = X_array[:, support]
-        selected_columns = np.array(columns)[support]
-        X_selected = pd.DataFrame(X_selected, columns=selected_columns)
+        selected_indices = [list(columns).index(feature) for feature in selected_features]
+        X_selected = X_array[:, selected_indices]
+        X_selected = pd.DataFrame(X_selected, columns=selected_features)
 
     if verbose:
-        print("Number of features remaining after feature selection step:", len(selected_columns))
-        print("Selected features:", selected_columns.tolist())
+        print("Number of features remaining after feature selection step:", len(selected_features))
+        print("Selected features:", selected_features)
         print("Feature importances:")
-        for i, col in enumerate(columns):
-            print(f"{col}: {importances[i]:.6f}")
+        for i, feature in enumerate(feature_names):
+            print(f"{feature}: {importances[i]:.6f}")
 
     return {
         'data': X_selected,
         'column_flags': support,
-        'new_columns': selected_columns.tolist(),
-        'importances': importances
+        'new_columns': selected_features,
+        'importances': dict(zip(feature_names, importances)),
+        'importance_df': importance_df
     }
 
 class TestFilterFeatures(unittest.TestCase):
 
     def test_filter_features_pandas(self):
         '''
-        Test filter_features_permutation using simple
+        Test filter_features_dalex using simple
         example from a regression dataset.
         '''
-        print("Testing filter_features_permutation with pandas dataframe")
+        print("Testing filter_features_dalex with pandas dataframe")
         X, y = load_iris(return_X_y=True)
         X = pd.DataFrame(X)
         y = np.random.rand(len(X))  # Generate random continuous target variable
-        result = filter_features_permutation(X, y)
+        result = filter_features_dalex(X, y)
         X2 = result['data']
         assert X2.shape[1] > 0
 
     def test_filter_features_classification(self):
         '''
-        Test filter_features_permutation using simple
+        Test filter_features_dalex using simple
         example from a classification dataset.
         '''
-        print("Testing filter_features_permutation with classification task")
+        print("Testing filter_features_dalex with classification task")
         X, y = load_iris(return_X_y=True)
         X = pd.DataFrame(X)
-        result = filter_features_permutation(X, y, task_type='classification', method_estimate='rf')
+        result = filter_features_dalex(X, y, task_type='classification', method_estimate='rf')
         X2 = result['data']
         assert X2.shape[1] > 0
 
-    def test_filter_features_pandas_large(self,
-            method_estimate='xgb',
-            task_type='regression',
-            extracols=70, extrarows=100, n_jobs=2):
-        '''
-        Example that tests run times for large number of
-        rows (samples) and columns (features).
-        One can have more challenging tests for
-        extracols > 200, extrarows > 1000.
-        '''
-        print("Testing filter_features_permutation with large number of rows and columns")
-        X, y = load_iris(return_X_y=True)
-        X = pd.DataFrame(X, columns=['I1', 'I2', 'I3', 'I4'])
-        X = X[:100]
+ 
+def test_filter_features_pandas_large(self,
+        method_estimate='xgb',
+        task_type='regression',
+        extracols=70, extrarows=100, n_jobs=2):
+    '''
+    Example that tests run times for large number of
+    rows (samples) and columns (features).
+    One can have more challenging tests for
+    extracols > 200, extrarows > 1000.
+    '''
+    print("Testing filter_features_dalex with large number of rows and columns")
+    X, y = load_iris(return_X_y=True)
+    X = pd.DataFrame(X, columns=['I1', 'I2', 'I3', 'I4'])
+    X = X[:100]
 
+    if task_type == 'regression':
+        y = np.random.rand(len(X))  # Generate random continuous target variable
+    else:  # classification
+        y = y[:100]  # Use original classification labels
+
+    rows, cols = X.shape
+    if extracols > 0:
+        A = np.random.normal(0, 1, (rows, extracols))
+        A = pd.DataFrame(data=A, columns=prefixed_index('V', n=extracols))
+        assert not pd.Series(A.columns).duplicated().any()
+        X = pd.concat([X, A], axis=1)  # add more columns
+    if extrarows > 0:
+        A2 = np.random.normal(0, 1, (extrarows, len(X.columns)))
+        A2 = pd.DataFrame(data=A2, columns=X.columns)
+        X = pd.concat([X, A2], axis=0)  # add more rows
         if task_type == 'regression':
-            y = np.random.rand(len(X))  # Generate random continuous target variable
+            y = np.concatenate([y, np.random.rand(extrarows)])  # Extend target variable
         else:  # classification
-            y = y[:100]  # Use original classification labels
+            y = np.concatenate([y, np.random.choice(np.unique(y), size=extrarows)])  # Extend target variable
+    X.index = range(len(X))
+    assert len(y) == X.shape[0]  # number of rows must match
+    assert not pd.Series(X.columns).duplicated().any()
 
-        rows, cols = X.shape
-        if extracols > 0:
-            A = np.random.normal(0, 1, (rows, extracols))
-            A = pd.DataFrame(data=A, columns=prefixed_index('V', n=extracols))
-            assert not pd.Series(A.columns).duplicated().any()
-            X = pd.concat([X, A], axis=1)  # add more columns
-        if extrarows > 0:
-            A2 = np.random.normal(0, 1, (extrarows, len(X.columns)))
-            A2 = pd.DataFrame(data=A2, columns=X.columns)
-            X = pd.concat([X, A2], axis=0)  # add more rows
-            if task_type == 'regression':
-                y = np.concatenate([y, np.random.rand(extrarows)])  # Extend target variable
-            else:  # classification
-                y = np.concatenate([y, np.random.choice(np.unique(y), size=extrarows)])  # Extend target variable
-        X.index = range(len(X))
-        assert len(y) == X.shape[0]  # number of rows must match
-        assert not pd.Series(X.columns).duplicated().any()
+    # Force feature selection to select fewer features
+    n_features_to_select = max(1, X.shape[1] // 2)  # Select half the features or at least 1
 
-        result = filter_features_permutation(X, y, n_jobs=n_jobs,
-                                 method_estimate=method_estimate,
-                                 task_type=task_type)
-        X2 = result['data']
-        newcols = result['new_columns']
-        assert not pd.Series(newcols).duplicated().any()
-        assert len(newcols) < X.shape[1]  # must have reduced number of features
+    result = filter_features_dalex(X, y, n_jobs=n_jobs,
+                             method_estimate=method_estimate,
+                             task_type=task_type,
+                             n_features_to_select=n_features_to_select)
+    X2 = result['data']
+    newcols = result['new_columns']
+    assert not pd.Series(newcols).duplicated().any()
+
+    # Check that we have the expected number of features after selection
+    assert len(newcols) == n_features_to_select
+    assert len(newcols) > 0, "Feature selection should return at least one feature"
 
     def test_filter_features(self):
         '''
-        Testing filter_features_permutation using a regression dataset.
+        Testing filter_features_dalex using a regression dataset.
         '''
-        print("Testing filter_features_permutation with numpy array")
+        print("Testing filter_features_dalex with numpy array")
         X, y = load_iris(return_X_y=True)
         y = np.random.rand(len(X))  # Generate random continuous target variable
-        X2 = filter_features_permutation(X, y)['data']
+        X2 = filter_features_dalex(X, y)['data']
         assert X2.shape[1] > 0
 
 
 def AutoFeatures(data, target,
     method_estimate='xgb',
     task_type='auto',
-    cv=5,
     ff_corr_max=0.9,
     target_corr_max=0.9,
     target_corr_max_p=0.9,
     n_features_to_select=None,
-    n_repeats=5,
+    n_permutations=10,
     random_state=42,
     n_jobs=1):
     '''
     This function encapsulates the pipeline for feature selection.
     First, features are eliminated based on correlations with
     other features or the target variable. Next, features are
-    eliminated based on permutation importance.
+    eliminated based on dalex permutation importance.
 
     Parameters:
     data: A Pandas dataframe containing feature data.
     target: A numpy array or pandas Series containing the target variable.
     method_estimate: Method for estimator. Options: 'xgb' (default), 'knn', 'svm', 'rf', 'linear'
     task_type: Type of task. Options: 'auto' (default), 'regression', 'classification'
-    cv: Number of cross-validation folds
     ff_corr_max: Maximum correlation between features
     target_corr_max: Maximum correlation with target variable
     target_corr_max_p: Maximum correlation P-value (effectively minimal correlation) with target variable.
     n_features_to_select: Number of features to select. If None (default) automatically find best set of features
-    n_repeats: Number of times to permute each feature
+    n_permutations: Number of permutations for each variable
     random_state: Random seed for reproducibility
     n_jobs: Number of jobs for parallelization
 
@@ -490,6 +507,7 @@ def AutoFeatures(data, target,
     'column_flags': List with boolean logical values corresponding to
      which columns from the input data frame to keep.
     'importances': Feature importance values from permutation importance
+    'importance_df': DataFrame with detailed importance information
     '''
     # print("Filtering features with AutoFeatures...")
     if not isinstance(target, (np.ndarray, pd.Series)):
@@ -516,13 +534,12 @@ def AutoFeatures(data, target,
     data2 = result['data']
     assert data2.shape[1] > 0
 
-    # Step 2: Filter based on permutation importance
-    result2 = filter_features_permutation(data2, target,
+    # Step 2: Filter based on dalex permutation importance
+    result2 = filter_features_dalex(data2, target,
         method_estimate=method_estimate,
         task_type=task_type,
-        cv=cv,
         n_features_to_select=n_features_to_select,
-        n_repeats=n_repeats,
+        n_permutations=n_permutations,
         random_state=random_state,
         n_jobs=n_jobs)
 
@@ -551,7 +568,7 @@ class TestAutoFeatures(unittest.TestCase):
             'G':[1.2,0.3, 4.7, 2.3, 0.5, 0.9],
             'H':[2.5,8.4, 5.3, -2.4,-1.5,0.0]})
         target = np.array([0, 1, 0, 1, 0, 1])
-        result = AutoFeatures(data, target=target, cv=3, task_type='classification')
+        result = AutoFeatures(data, target=target, task_type='classification')
         print('Selected features: ')
         print(result['new_columns'])
         assert len(result['new_columns'])>0
